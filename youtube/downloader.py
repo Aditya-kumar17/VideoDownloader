@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
+import ttkbootstrap as tb
 import yt_dlp
 import json
 import os
@@ -9,45 +10,82 @@ import urllib.request
 import functools
 
 class VideoDownloaderApp:
-    def __init__(self, root):
-        self.root = root
+    def __init__(self, root=None):
+        # Use ttkbootstrap for Material-inspired and vibrant UI
+        if root is None:
+            self.root = tb.Window(themename="superhero")  # Try 'superhero', 'cyborg', 'solar', 'flatly', 'journal', etc.
+        else:
+            self.root = root
         self.root.title("Video Downloader")
         self.root.geometry("600x450")
 
-        self.tabs = ttk.Notebook(root)
-        self.youtube_tab = ttk.Frame(self.tabs)
-        self.history_tab = ttk.Frame(self.tabs)
+        self.tabs = tb.Notebook(self.root, bootstyle="primary")
+        self.youtube_tab = tb.Frame(self.tabs)
+        self.instagram_tab = tb.Frame(self.tabs)
+        self.history_tab = tb.Frame(self.tabs)
         self.tabs.add(self.youtube_tab, text="YouTube")
+        self.tabs.add(self.instagram_tab, text="Instagram")
         self.tabs.add(self.history_tab, text="History")
         self.tabs.pack(expand=1, fill="both")
 
-    # YouTube Tab UI
-        self.url_label = ttk.Label(self.youtube_tab, text="Enter Video URL:")
+            # YouTube Tab UI
+        self.url_label = tb.Label(self.youtube_tab, text="Enter Video URL:", bootstyle="info")
         self.url_label.pack(pady=10)
-        self.url_entry = ttk.Entry(self.youtube_tab, width=60)
+        self.url_entry = tb.Entry(self.youtube_tab, width=60, bootstyle="info")
         self.url_entry.pack(pady=5)
 
-        self.fetch_btn = ttk.Button(self.youtube_tab, text="Fetch Formats", command=self.fetch_formats)
+        self.fetch_btn = tb.Button(self.youtube_tab, text="Fetch Formats", command=self.fetch_formats, bootstyle="success")
         self.fetch_btn.pack(pady=10)
 
         self.format_list = tk.Listbox(self.youtube_tab, width=80, height=10)
-        self.format_list.pack(pady=10)
+        self.format_list.pack(pady=5)
+    # ...existing code...
 
-        self.download_btn = ttk.Button(self.youtube_tab, text="Download Selected", command=self.download_selected)
+        self.download_btn = tb.Button(self.youtube_tab, text="Download Selected", command=self.download_selected, bootstyle="danger")
         self.download_btn.pack(pady=10)
 
-        self.progress = ttk.Progressbar(self.youtube_tab, orient="horizontal", length=400, mode="determinate")
+        self.progress = tb.Progressbar(self.youtube_tab, orient="horizontal", length=400, mode="determinate", bootstyle="info")
         self.progress.pack(pady=10)
 
-    # History List in separate tab
-        self.history_label = ttk.Label(self.history_tab, text="Download History:")
+            # History List in separate tab
+        self.history_label = tb.Label(self.history_tab, text="Download History:", bootstyle="info")
         self.history_label.pack(pady=5)
-        self.history_canvas = tk.Canvas(self.history_tab, width=560, height=350)
+        self.history_canvas = tb.Canvas(self.history_tab, width=560, height=350)
         self.history_canvas.pack(pady=5)
         self.history_thumbnails = []  # Keep references to PhotoImage objects
         self.history_file = os.path.join(os.path.dirname(__file__), 'history.json')
         self.history = self.load_history()  # List of dicts: {url, title, thumbnail}
         self.refresh_history_list()
+
+        # Instagram Tab UI
+        self.insta_label = tb.Label(self.instagram_tab, text="Enter Instagram Video URL:", bootstyle="info")
+        self.insta_label.pack(pady=10)
+        self.insta_entry = tb.Entry(self.instagram_tab, width=60, bootstyle="info")
+        self.insta_entry.pack(pady=5)
+        self.insta_download_btn = tb.Button(self.instagram_tab, text="Download Video", command=self.download_instagram, bootstyle="success")
+        self.insta_download_btn.pack(pady=10)
+    def download_instagram(self):
+        url = self.insta_entry.get().strip()
+        if not url:
+            messagebox.showerror("Error", "Please enter an Instagram video URL.")
+            return
+        try:
+            ydl_opts = {
+                'outtmpl': '%(title)s.%(ext)s',
+                'quiet': True
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            # Add to history if not already present
+            title = info.get('title', url)
+            thumbnail = info.get('thumbnail', '')
+            if not any(h['url'] == url for h in self.history):
+                self.history.append({'url': url, 'title': title, 'thumbnail': thumbnail})
+                self.save_history()
+                self.refresh_history_list()
+            messagebox.showinfo("Success", "Instagram video downloaded!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to download Instagram video: {e}")
     def refresh_history_list(self):
         self.history_canvas.delete("all")
         self.history_thumbnails.clear()
@@ -72,8 +110,12 @@ class VideoDownloaderApp:
         self.on_history_canvas_click(idx)
     def on_history_canvas_click(self, idx):
         url = self.history[idx]['url']
+        # Set URL in YouTube tab
         self.url_entry.delete(0, tk.END)
         self.url_entry.insert(0, url)
+        # Set URL in Instagram tab
+        self.insta_entry.delete(0, tk.END)
+        self.insta_entry.insert(0, url)
     def load_history(self):
         if os.path.exists(self.history_file):
             try:
