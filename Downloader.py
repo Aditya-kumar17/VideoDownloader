@@ -1,696 +1,531 @@
-import tkinter as tk
-from tkinter import messagebox, filedialog, ttk
-import ttkbootstrap as tb
-from ttkbootstrap.constants import *
+import flet as ft
 import yt_dlp
 import json
 import os
 import threading
-from PIL import Image, ImageTk
-import io
-import urllib.request
-import functools
-import time
 from datetime import datetime
-import re
 
-class ModernVideoDownloader:
-    def __init__(self):
-        # Initialize the main window with a modern theme
-        self.root = tb.Window(themename="darkly")
-        self.root.title("Video Downloader")
-        self.root.geometry("900x700")
-        self.root.minsize(800, 1000)
-        
-        # Configure grid weights for responsive layout
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_rowconfigure(0, weight=1)
+class FletVideoDownloader:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        self.page.title = "Video Downloader"
+        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.window_width = 900
+        self.page.window_height = 700
+        self.page.padding = 20
+        self.page.window_resizable = True
         
         # Initialize variables
         self.formats = []
         self.current_download_thread = None
         self.download_queue = []
         self.is_downloading = False
+        self.history = []
+        self.history_file = os.path.join(os.path.expanduser("~"), '.flet_video_downloader_history.json') # Safer path
+        self.selected_format_index = None
         
-        # Setup UI
+        # Create UI
         self.setup_ui()
         self.load_history()
+        self.refresh_history_list() # Initial population of history tab
         
-        # Center window on screen
-        self.center_window()
-        
-    def center_window(self):
-        """Center the window on the screen"""
-        self.root.update_idletasks()
-        width = self.root.winfo_width()
-        height = self.root.winfo_height()
-        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.root.winfo_screenheight() // 2) - (height // 2)
-        self.root.geometry(f'{width}x{height}+{x}+{y}')
-    
     def setup_ui(self):
         """Setup the main UI components"""
-        # Main container
-        main_frame = tb.Frame(self.root)
-        main_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_rowconfigure(1, weight=1)
-        
-        # Header
-        self.create_header(main_frame)
-        
-        # Notebook for tabs
-        self.notebook = tb.Notebook(main_frame, bootstyle="primary")
-        self.notebook.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        
         # Create tabs
-        self.create_youtube_tab()
-        self.create_instagram_tab()
-        self.create_history_tab()
-        self.create_settings_tab()
+        self.tabs = ft.Tabs(
+            tabs=[
+                ft.Tab(text="🎥 YouTube", content=self.create_youtube_tab()),
+                ft.Tab(text="📷 Instagram", content=self.create_instagram_tab()),
+                ft.Tab(text="📚 History", content=self.create_history_tab()),
+                ft.Tab(text="⚙️ Settings", content=self.create_settings_tab()),
+            ],
+            expand=True,
+        )
         
         # Status bar
-        self.create_status_bar(main_frame)
-    
-    def create_header(self, parent):
-        """Create the header section"""
-        header_frame = tb.Frame(parent)
-        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        header_frame.grid_columnconfigure(1, weight=1)
+        self.status_bar = ft.Text("Ready", size=14)
+        
+        # Main layout
+        self.page.add(
+            ft.Column(
+                controls=[
+                    self.tabs,
+                    ft.Divider(),
+                    self.status_bar
+                ],
+                expand=True,
+            )
+        )
     
     def create_youtube_tab(self):
-        """Create the YouTube download tab"""
-        youtube_frame = tb.Frame(self.notebook)
-        self.notebook.add(youtube_frame, text="🎥 YouTube")
+        """Create YouTube download tab"""
+        # URL input
+        self.url_entry = ft.TextField(
+            label="YouTube Video URL",
+            hint_text="Enter YouTube video URL",
+            expand=True,
+            on_submit=self.fetch_formats
+        )
         
-        # URL input section
-        url_frame = tb.LabelFrame(youtube_frame, text="Video URL", padding=15)
-        url_frame.pack(fill="x", padx=10, pady=10)
+        # Video info display
+        self.video_title = ft.Text("No video selected", size=16, weight="bold")
+        self.video_duration = ft.Text("", size=14)
         
-        self.url_entry = tb.Entry(url_frame, font=("Segoe UI", 11), bootstyle="info")
-        self.url_entry.pack(fill="x", pady=(0, 10))
-        self.url_entry.bind('<Return>', lambda e: self.fetch_formats())
+        # Formats table
+        self.formats_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Quality")),
+                ft.DataColumn(ft.Text("Type")),
+                ft.DataColumn(ft.Text("Size")),
+                ft.DataColumn(ft.Text("FPS")),
+                ft.DataColumn(ft.Text("Codecs")),
+            ],
+            rows=[],
+        )
         
-        # Buttons frame
-        btn_frame = tb.Frame(url_frame)
-        btn_frame.pack(fill="x")
+        # Download path
+        self.download_path = ft.TextField(
+            label="Download Location",
+            value=os.path.join(os.path.expanduser("~"), "Downloads"),
+            expand=True
+        )
         
-        self.fetch_btn = tb.Button(btn_frame, text="🔍 Fetch Formats", 
-                                 command=self.fetch_formats, bootstyle="success-outline")
-        self.fetch_btn.pack(side="left", padx=(0, 10))
+        # Progress
+        self.progress_text = ft.Text("Ready to download")
+        self.progress_bar = ft.ProgressBar(value=0, width=400)
         
-        self.clear_btn = tb.Button(btn_frame, text="🗑️ Clear", 
-                                 command=self.clear_youtube_form, bootstyle="danger-outline")
-        self.clear_btn.pack(side="left")
+        # Download button reference
+        self.download_btn = ft.ElevatedButton(
+            text="⬇️ Download Selected",
+            on_click=self.download_selected,
+            icon="DOWNLOAD",
+            disabled=True
+        )
+
+        # FIX 1: Assign the "Fetch Formats" button to self.fetch_btn
+        self.fetch_btn = ft.ElevatedButton(
+            text="🔍 Fetch Formats",
+            on_click=self.fetch_formats,
+            icon="SEARCH"
+        )
         
-        # Video info section
-        self.info_frame = tb.LabelFrame(youtube_frame, text="Video Information", padding=15)
-        self.info_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        self.video_title_label = tb.Label(self.info_frame, text="No video selected", 
-                                        font=("Segoe UI", 12, "bold"))
-        self.video_title_label.pack(anchor="w")
-        
-        self.video_duration_label = tb.Label(self.info_frame, text="", 
-                                           font=("Segoe UI", 10))
-        self.video_duration_label.pack(anchor="w")
-        
-        # Formats section
-        formats_frame = tb.LabelFrame(youtube_frame, text="Available Formats", padding=15)
-        formats_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        
-        # Create Treeview for formats
-        columns = ('Quality', 'Format', 'Size', 'FPS', 'Codec')
-        self.formats_tree = ttk.Treeview(formats_frame, columns=columns, show='headings', height=8)
-        
-        # Configure columns
-        for col in columns:
-            self.formats_tree.heading(col, text=col)
-            self.formats_tree.column(col, width=100, anchor="center")
-        
-        # Scrollbar for formats
-        formats_scrollbar = ttk.Scrollbar(formats_frame, orient="vertical", command=self.formats_tree.yview)
-        self.formats_tree.configure(yscrollcommand=formats_scrollbar.set)
-        
-        self.formats_tree.pack(side="left", fill="both", expand=True)
-        formats_scrollbar.pack(side="right", fill="y")
-        
-        # Download section
-        download_frame = tb.LabelFrame(youtube_frame, text="Download", padding=15)
-        download_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        # Download options
-        options_frame = tb.Frame(download_frame)
-        options_frame.pack(fill="x", pady=(0, 10))
-        
-        tb.Label(options_frame, text="Download Location:").pack(side="left")
-        self.download_path = tk.StringVar(value=os.path.join(os.getcwd(), "downloads"))
-        self.path_entry = tb.Entry(options_frame, textvariable=self.download_path, width=40)
-        self.path_entry.pack(side="left", padx=(10, 5))
-        
-        self.browse_btn = tb.Button(options_frame, text="📁 Browse", 
-                                  command=self.browse_download_path, bootstyle="info-outline")
-        self.browse_btn.pack(side="left")
-        
-        # Download button
-        self.download_btn = tb.Button(download_frame, text="⬇️ Download Selected", 
-                                    command=self.download_selected, bootstyle="success", 
-                                    state="disabled")
-        self.download_btn.pack(pady=(10, 0))
-        
-        # Progress section
-        progress_frame = tb.Frame(download_frame)
-        progress_frame.pack(fill="x", pady=(10, 0))
-        
-        self.progress_label = tb.Label(progress_frame, text="Ready to download")
-        self.progress_label.pack(anchor="w")
-        
-        self.progress_bar = tb.Progressbar(progress_frame, orient="horizontal", 
-                                         length=400, mode="determinate", bootstyle="success")
-        self.progress_bar.pack(fill="x", pady=(5, 0))
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.url_entry,
+                        self.fetch_btn, # Use the instance attribute here
+                        ft.ElevatedButton(
+                            text="🗑️ Clear",
+                            on_click=self.clear_youtube_form,
+                            icon="DELETE",
+                            color="error"
+                        )
+                    ]
+                ),
+                
+                ft.Column(controls=[self.video_title, self.video_duration]),
+                
+                ft.Container(
+                    content=ft.Column(
+                    [self.formats_table],
+                    scroll=ft.ScrollMode.ALWAYS
+                    ),
+                    height=200,
+                    border=ft.border.all(1, color=ft.Colors.OUTLINE),
+                    border_radius=ft.border_radius.all(5)
+                        ),
+                
+                ft.Row(
+                    controls=[
+                        self.download_path,
+                        ft.ElevatedButton(
+                            text="📁 Browse",
+                            on_click=self.browse_download_path,
+                            icon="FOLDER_OPEN"
+                        )
+                    ]
+                ),
+                self.download_btn,
+                
+                self.progress_text,
+                self.progress_bar
+            ],
+            scroll=ft.ScrollMode.ADAPTIVE,
+            expand=True
+        )
     
     def create_instagram_tab(self):
-        """Create the Instagram download tab"""
-        instagram_frame = tb.Frame(self.notebook)
-        self.notebook.add(instagram_frame, text="📷 Instagram")
+        """Create Instagram download tab"""
+        self.insta_entry = ft.TextField(
+            label="Instagram Video URL",
+            hint_text="Enter Instagram video or Reel URL",
+            expand=True,
+            on_submit=self.download_instagram
+        )
         
-        # URL input section
-        url_frame = tb.LabelFrame(instagram_frame, text="Instagram Video URL", padding=15)
-        url_frame.pack(fill="x", padx=10, pady=10)
+        self.insta_info = ft.Text("Enter an Instagram video URL to download")
         
-        self.insta_entry = tb.Entry(url_frame, font=("Segoe UI", 11), bootstyle="info")
-        self.insta_entry.pack(fill="x", pady=(0, 10))
-        self.insta_entry.bind('<Return>', lambda e: self.download_instagram())
+        self.insta_download_btn = ft.ElevatedButton(
+            text="⬇️ Download Video",
+            on_click=self.download_instagram,
+            icon="DOWNLOAD"
+        )
         
-        # Buttons
-        btn_frame = tb.Frame(url_frame)
-        btn_frame.pack(fill="x")
-        
-        self.insta_download_btn = tb.Button(btn_frame, text="⬇️ Download Video", 
-                                          command=self.download_instagram, bootstyle="success")
-        self.insta_download_btn.pack(side="left", padx=(0, 10))
-        
-        self.insta_clear_btn = tb.Button(btn_frame, text="🗑️ Clear", 
-                                       command=self.clear_instagram_form, bootstyle="danger-outline")
-        self.insta_clear_btn.pack(side="left")
-        
-        # Info section
-        self.insta_info_frame = tb.LabelFrame(instagram_frame, text="Information", padding=15)
-        self.insta_info_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        self.insta_info_label = tb.Label(self.insta_info_frame, 
-                                       text="Enter an Instagram video URL to download")
-        self.insta_info_label.pack()
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.insta_entry,
+                        self.insta_download_btn,
+                        ft.ElevatedButton(
+                            text="🗑️ Clear",
+                            on_click=self.clear_instagram_form,
+                            icon="DELETE",
+                            color="error"
+                        )
+                    ]
+                ),
+                self.insta_info
+            ]
+        )
     
     def create_history_tab(self):
-        """Create the download history tab"""
-        history_frame = tb.Frame(self.notebook)
-        self.notebook.add(history_frame, text="📚 History")
+        """Create download history tab"""
+        self.history_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Title")),
+                ft.DataColumn(ft.Text("URL")),
+                ft.DataColumn(ft.Text("Date")),
+                ft.DataColumn(ft.Text("Platform")),
+            ],
+            rows=[]
+        )
         
-        # History controls
-        controls_frame = tb.Frame(history_frame)
-        controls_frame.pack(fill="x", padx=10, pady=10)
-        
-        self.refresh_history_btn = tb.Button(controls_frame, text="🔄 Refresh", 
-                                           command=self.refresh_history_list, bootstyle="info-outline")
-        self.refresh_history_btn.pack(side="left", padx=(0, 10))
-        
-        self.clear_history_btn = tb.Button(controls_frame, text="🗑️ Clear History", 
-                                         command=self.clear_history, bootstyle="danger-outline")
-        self.clear_history_btn.pack(side="left")
-        
-        # History list
-        history_list_frame = tb.LabelFrame(history_frame, text="Download History", padding=15)
-        history_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        
-        # Create Treeview for history
-        columns = ('Title', 'URL', 'Date', 'Platform')
-        self.history_tree = ttk.Treeview(history_list_frame, columns=columns, show='headings', height=15)
-        
-        for col in columns:
-            self.history_tree.heading(col, text=col)
-            if col == 'Title':
-                self.history_tree.column(col, width=300, anchor="w")
-            elif col == 'URL':
-                self.history_tree.column(col, width=200, anchor="w")
-            else:
-                self.history_tree.column(col, width=100, anchor="center")
-        
-        # Scrollbar
-        history_scrollbar = ttk.Scrollbar(history_list_frame, orient="vertical", command=self.history_tree.yview)
-        self.history_tree.configure(yscrollcommand=history_scrollbar.set)
-        
-        self.history_tree.pack(side="left", fill="both", expand=True)
-        history_scrollbar.pack(side="right", fill="y")
-        
-        # Bind double-click event
-        self.history_tree.bind('<Double-1>', self.on_history_double_click)
-        
-        # History file path
-        self.history_file = os.path.join(os.path.dirname(__file__), 'history.json')
+        return ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.ElevatedButton(
+                            text="🔄 Refresh",
+                            on_click=self.refresh_history_list,
+                            icon="REFRESH"
+                        ),
+                        ft.ElevatedButton(
+                            text="🗑️ Clear History",
+                            on_click=self.clear_history,
+                            icon="DELETE_FOREVER",
+                            color="error"
+                        )
+                    ]
+                ),
+                ft.Container(
+                    content=self.history_table,
+                    height=400,
+                    border=ft.border.all(1, color=ft.Colors.OUTLINE),
+                    border_radius=ft.border_radius.all(5)
+                )
+            ]
+        )
     
     def create_settings_tab(self):
-        """Create the settings tab"""
-        settings_frame = tb.Frame(self.notebook)
-        self.notebook.add(settings_frame, text="⚙️ Settings")
+        """Create settings tab"""
+        self.theme_switch = ft.Switch(
+            label="Dark Mode", 
+            value=True,
+            on_change=self.change_theme_mode
+        )
         
-        # General settings
-        general_frame = tb.LabelFrame(settings_frame, text="General Settings", padding=15)
-        general_frame.pack(fill="x", padx=10, pady=10)
-        
-        # Default download path
-        path_frame = tb.Frame(general_frame)
-        path_frame.pack(fill="x", pady=(0, 10))
-        
-        tb.Label(path_frame, text="Default Download Path:").pack(anchor="w")
-        self.default_path_var = tk.StringVar(value=os.path.join(os.getcwd(), "downloads"))
-        default_path_entry = tb.Entry(path_frame, textvariable=self.default_path_var, width=50)
-        default_path_entry.pack(fill="x", pady=(5, 0))
-        
-        # Theme selection
-        theme_frame = tb.Frame(general_frame)
-        theme_frame.pack(fill="x", pady=(10, 0))
-        
-        tb.Label(theme_frame, text="Theme:").pack(anchor="w")
-        self.theme_var = tk.StringVar(value="darkly")
-        themes = ["darkly", "superhero", "cyborg", "solar", "flatly", "journal", "cosmo", "vapor"]
-        theme_combo = tb.Combobox(theme_frame, textvariable=self.theme_var, values=themes, state="readonly")
-        theme_combo.pack(fill="x", pady=(5, 0))
-        theme_combo.bind('<<ComboboxSelected>>', self.change_theme)
-        
-        # Download settings
-        download_settings_frame = tb.LabelFrame(settings_frame, text="Download Settings", padding=15)
-        download_settings_frame.pack(fill="x", padx=10, pady=(0, 10))
-        
-        # Auto-create folders
-        self.auto_create_folders = tk.BooleanVar(value=True)
-        auto_folder_check = tb.Checkbutton(download_settings_frame, text="Auto-create download folders", 
-                                         variable=self.auto_create_folders, bootstyle="round-toggle")
-        auto_folder_check.pack(anchor="w", pady=(0, 5))
-        
-        # Show download notifications
-        self.show_notifications = tk.BooleanVar(value=True)
-        notifications_check = tb.Checkbutton(download_settings_frame, text="Show download notifications", 
-                                           variable=self.show_notifications, bootstyle="round-toggle")
-        notifications_check.pack(anchor="w")
-    
-    def create_status_bar(self, parent):
-        """Create the status bar"""
-        self.status_bar = tb.Label(parent, text="Ready", relief="sunken", anchor="w")
-        self.status_bar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        return ft.Column(
+            controls=[
+                ft.Text("General Settings", size=18, weight="bold"),
+                self.theme_switch,
+            ]
+        )
     
     def update_status(self, message):
         """Update the status bar message"""
-        self.status_bar.config(text=message)
-        self.root.update_idletasks()
-    
-    def browse_download_path(self):
-        """Browse for download directory"""
-        path = filedialog.askdirectory(initialdir=self.download_path.get())
-        if path:
-            self.download_path.set(path)
-    
-    def clear_youtube_form(self):
+        self.status_bar.value = message
+        self.page.update()
+
+    def browse_download_path(self, e=None):
+        """Placeholder for browsing download directory"""
+        self.update_status("Feature not yet implemented. Please type the path manually.")
+
+    # FIX 2: Add e=None to event handlers for consistency
+    def clear_youtube_form(self, e=None):
         """Clear YouTube form fields"""
-        self.url_entry.delete(0, tk.END)
-        self.formats_tree.delete(*self.formats_tree.get_children())
-        self.video_title_label.config(text="No video selected")
-        self.video_duration_label.config(text="")
-        self.download_btn.config(state="disabled")
+        self.url_entry.value = ""
+        self.formats_table.rows.clear()
+        self.video_title.value = "No video selected"
+        self.video_duration.value = ""
+        self.download_btn.disabled = True
+        self.progress_bar.value = 0
+        self.progress_text.value = "Ready to download"
         self.update_status("Form cleared")
-    
-    def clear_instagram_form(self):
+
+    def clear_instagram_form(self, e=None):
         """Clear Instagram form fields"""
-        self.insta_entry.delete(0, tk.END)
-        self.insta_info_label.config(text="Enter an Instagram video URL to download")
+        self.insta_entry.value = ""
+        self.insta_info.value = "Enter an Instagram video URL to download"
         self.update_status("Instagram form cleared")
-    
-    def change_theme(self, event=None):
-        """Change the application theme"""
-        theme = self.theme_var.get()
-        self.root.style.theme_use(theme)
-        self.update_status(f"Theme changed to {theme}")
-    
-    def fetch_formats(self):
-        """Fetch available formats for YouTube video"""
-        url = self.url_entry.get().strip()
+
+    def change_theme_mode(self, e=None):
+        """Change theme mode between dark and light"""
+        self.page.theme_mode = ft.ThemeMode.DARK if self.theme_switch.value else ft.ThemeMode.LIGHT
+        self.page.update()
+
+    def fetch_formats(self, e=None):
+        """Fetch available formats for a YouTube video"""
+        url = self.url_entry.value.strip()
         if not url:
-            messagebox.showerror("Error", "Please enter a YouTube URL.")
+            self.update_status("Please enter a YouTube URL")
             return
         
         self.update_status("Fetching video formats...")
-        self.fetch_btn.config(state="disabled")
+        self.fetch_btn.disabled = True
+        self.page.update()
         
-        # Run in separate thread to avoid blocking UI
         thread = threading.Thread(target=self._fetch_formats_thread, args=(url,))
         thread.daemon = True
         thread.start()
     
     def _fetch_formats_thread(self, url):
-        """Thread function for fetching formats"""
+        """Threaded function for fetching formats"""
         try:
-            ydl_opts = {
-                'listformats': True,
-                'quiet': True,
-                'no_warnings': True
-            }
-            
+            ydl_opts = {'quiet': True, 'no_warnings': True}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 
-                # Update UI in main thread
-                self.root.after(0, lambda: self._update_video_info(info))
-                self.root.after(0, lambda: self._populate_formats(info))
-                self.root.after(0, lambda: self.update_status("Formats fetched successfully"))
+                # Update UI elements safely from the main thread
+                self.page.run_thread(self._update_video_info, info)
+                self.page.run_thread(self._populate_formats, info)
+                self.page.run_thread(self.update_status, "Formats fetched successfully. Please select one.")
                 
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch formats: {str(e)}"))
-            self.root.after(0, lambda: self.update_status("Failed to fetch formats"))
+            self.page.run_thread(self.update_status, f"Error fetching formats: {e}")
         finally:
-            self.root.after(0, lambda: self.fetch_btn.config(state="normal"))
+            self.page.run_thread(lambda: setattr(self.fetch_btn, 'disabled', False))
+            self.page.run_thread(self.page.update)
     
     def _update_video_info(self, info):
-        """Update video information display"""
+        """Update the video title and duration display"""
         title = info.get('title', 'Unknown Title')
         duration = info.get('duration', 0)
         
-        # Truncate long titles
-        if len(title) > 60:
-            title = title[:57] + "..."
-        
-        self.video_title_label.config(text=title)
+        self.video_title.value = title[:60] + "..." if len(title) > 60 else title
         
         if duration:
-            minutes = duration // 60
-            seconds = duration % 60
-            duration_str = f"Duration: {minutes}:{seconds:02d}"
+            mins, secs = divmod(duration, 60)
+            self.video_duration.value = f"Duration: {mins:02d}:{secs:02d}"
         else:
-            duration_str = "Duration: Unknown"
-        
-        self.video_duration_label.config(text=duration_str)
+            self.video_duration.value = "Duration: Unknown"
     
     def _populate_formats(self, info):
-        """Populate the formats treeview"""
-        self.formats_tree.delete(*self.formats_tree.get_children())
-        self.formats = []
+        """Populate the formats table with video/audio options"""
+        self.formats_table.rows.clear()
+        self.formats = [
+            f for f in info.get('formats', [])
+            if f.get('vcodec', 'none') != 'none' or f.get('acodec', 'none') != 'none'
+        ]
         
-        important_exts = {'mp4', 'm4a', 'webm'}
-        
-        for f in info.get('formats', []):
-            ext = f.get('ext', '')
-            if ext not in important_exts:
-                continue
-            
-            # Skip storyboards and images
-            format_note = f.get('format_note', '').lower()
-            if f.get('vcodec', '') == 'images' or 'storyboard' in format_note:
-                continue
-            
+        for i, f in enumerate(self.formats):
             height = f.get('height')
-            filesize = f.get('filesize')
-            fps = f.get('fps')
+            quality = f"{height}p" if height else "Audio"
+            
             vcodec = f.get('vcodec', 'none')
             acodec = f.get('acodec', 'none')
+            format_type = "Video+Audio" if vcodec != 'none' and acodec != 'none' else ("Video" if vcodec != 'none' else "Audio")
             
-            # Determine quality string
-            if height is None:
-                quality = 'Audio Only'
-            elif height >= 2160:
-                quality = '4K (2160p)'
-            elif height >= 1440:
-                quality = '2K (1440p)'
-            elif height >= 1080:
-                quality = 'Full HD (1080p)'
-            elif height >= 720:
-                quality = 'HD (720p)'
-            elif height >= 480:
-                quality = 'SD (480p)'
-            else:
-                quality = f'{height}p'
+            filesize = f.get('filesize') or f.get('filesize_approx')
+            size_str = f"{filesize / (1024*1024):.1f} MB" if filesize else "N/A"
             
-            # Format string
-            if vcodec != 'none' and acodec != 'none':
-                format_type = 'Video + Audio'
-            elif vcodec != 'none':
-                format_type = 'Video Only'
-            else:
-                format_type = 'Audio Only'
+            fps = f.get('fps')
+            fps_str = str(fps) if fps else "N/A"
             
-            # Size string
-            if filesize:
-                size_mb = filesize / (1024 * 1024)
-                size_str = f"{size_mb:.1f} MB"
-            else:
-                size_str = "Unknown"
+            codecs = f"{vcodec.split('.')[0]}/{acodec.split('.')[0]}" if vcodec != 'none' and acodec != 'none' else (vcodec.split('.')[0] if vcodec != 'none' else acodec.split('.')[0])
             
-            # FPS string
-            fps_str = f"{fps}" if fps else "N/A"
-            
-            # Codec string
-            codec_str = f"{vcodec}/{acodec}" if vcodec != 'none' and acodec != 'none' else (vcodec if vcodec != 'none' else acodec)
-            
-            # Insert into treeview
-            item = self.formats_tree.insert('', 'end', values=(quality, format_type, size_str, fps_str, codec_str))
-            self.formats.append(f)
-        
-        self.download_btn.config(state="normal")
+            self.formats_table.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(quality)),
+                        ft.DataCell(ft.Text(format_type)),
+                        ft.DataCell(ft.Text(size_str)),
+                        ft.DataCell(ft.Text(fps_str)),
+                        ft.DataCell(ft.Text(codecs)),
+                    ],
+                    on_select_changed=lambda e, index=i: self._select_format(index)
+                )
+            )
+        self.download_btn.disabled = False if self.formats else True
+
+    def _select_format(self, index):
+        """Handle format selection from the table"""
+        self.selected_format_index = index
+        self.update_status(f"Selected format ID: {self.formats[index].get('format_id')}")
     
-    def download_selected(self):
-        """Download the selected format"""
-        selection = self.formats_tree.selection()
-        if not selection:
-            messagebox.showerror("Error", "Please select a format to download.")
+    def download_selected(self, e=None):
+        """Download the format chosen by the user"""
+        if self.selected_format_index is None:
+            self.update_status("Please select a format to download.")
             return
         
-        # Get selected format
-        selected_item = selection[0]
-        format_index = self.formats_tree.index(selected_item)
-        fmt = self.formats[format_index]
+        fmt = self.formats[self.selected_format_index]
+        url = self.url_entry.value.strip()
         
-        url = self.url_entry.get().strip()
-        
-        # Start download in separate thread
         thread = threading.Thread(target=self._download_thread, args=(url, fmt))
         thread.daemon = True
         thread.start()
     
     def _download_thread(self, url, fmt):
-        """Thread function for downloading"""
+        """Threaded function for downloading YouTube video"""
+        self.page.run_thread(lambda: setattr(self.download_btn, 'disabled', True))
         try:
-            self.is_downloading = True
-            self.root.after(0, lambda: self.download_btn.config(state="disabled"))
-            self.root.after(0, lambda: self.update_status("Starting download..."))
+            download_dir = self.download_path.value
+            os.makedirs(download_dir, exist_ok=True)
             
-            # Ensure download directory exists
-            download_dir = self.download_path.get()
-            if self.auto_create_folders.get():
-                os.makedirs(download_dir, exist_ok=True)
-            
-            # Prepare download options
             format_id = fmt.get('format_id')
-            height = fmt.get('height')
-            
-            # Determine resolution string for filename
-            if height is None:
-                res_str = 'audio'
-            elif height >= 2160:
-                res_str = '2160p'
-            elif height >= 1440:
-                res_str = '1440p'
-            elif height >= 1080:
-                res_str = '1080p'
-            elif height >= 720:
-                res_str = '720p'
-            elif height >= 480:
-                res_str = '480p'
-            else:
-                res_str = f'{height}p'
-            
-            ext = fmt.get('ext', 'mp4')
             
             ydl_opts = {
                 'format': format_id,
-                'outtmpl': os.path.join(download_dir, f'%(title)s_{res_str}.{ext}'),
-                'merge_output_format': ext if ext in ['mp4', 'm4a'] else 'mp4',
+                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+                'merge_output_format': 'mp4',
                 'progress_hooks': [self.ytdlp_progress_hook],
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                
-                # Add to history
-                title = info.get('title', url)
-                self.add_to_history(url, title, 'YouTube')
-                
-                self.root.after(0, lambda: self.progress_bar.config(value=100))
-                self.root.after(0, lambda: self.update_status("Download completed!"))
-                
-                if self.show_notifications.get():
-                    self.root.after(0, lambda: messagebox.showinfo("Success", "Download completed successfully!"))
+                title = info.get('title', 'Unknown Title')
+                self.page.run_thread(self.update_status, "Download completed!")
+                # FIX 3: Use 1.0 for progress bar completion
+                self.page.run_thread(lambda: setattr(self.progress_bar, 'value', 1.0))
+                self.page.run_thread(self.add_to_history, url, title, 'YouTube')
                 
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Download failed: {str(e)}"))
-            self.root.after(0, lambda: self.update_status("Download failed"))
+            self.page.run_thread(self.update_status, f"Download failed: {e}")
         finally:
             self.is_downloading = False
-            self.root.after(0, lambda: self.download_btn.config(state="normal"))
-            self.root.after(0, lambda: self.progress_bar.config(value=0))
+            self.page.run_thread(lambda: setattr(self.download_btn, 'disabled', False))
+            self.page.run_thread(self.page.update)
     
     def ytdlp_progress_hook(self, d):
-        """Progress hook for yt-dlp"""
+        """Progress hook for yt-dlp to update the progress bar"""
         if d['status'] == 'downloading':
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
-            downloaded = d.get('downloaded_bytes', 0)
-            
             if total_bytes:
-                percent = int(downloaded / total_bytes * 100)
-                self.root.after(0, lambda p=percent: self.progress_bar.config(value=p))
-                
-                # Update status with download speed
+                percent = d['downloaded_bytes'] / total_bytes
                 speed = d.get('speed')
-                if speed:
-                    speed_mb = speed / (1024 * 1024)
-                    status_text = f"Downloading... {percent}% ({speed_mb:.1f} MB/s)"
-                else:
-                    status_text = f"Downloading... {percent}%"
-                
-                self.root.after(0, lambda: self.update_status(status_text))
-        
+                speed_str = f"{speed / (1024*1024):.1f} MB/s" if speed else ""
+                status_text = f"Downloading... {int(percent*100)}% ({speed_str})"
+                self.page.run_thread(lambda: setattr(self.progress_bar, 'value', percent))
+                self.page.run_thread(lambda: setattr(self.progress_text, 'value', status_text))
+                self.page.run_thread(self.page.update)
         elif d['status'] == 'finished':
-            self.root.after(0, lambda: self.progress_bar.config(value=100))
-            self.root.after(0, lambda: self.update_status("Processing..."))
-    
-    def download_instagram(self):
-        """Download Instagram video"""
-        url = self.insta_entry.get().strip()
+            self.page.run_thread(lambda: setattr(self.progress_text, 'value', "Processing... please wait."))
+            self.page.run_thread(self.page.update)
+
+    def download_instagram(self, e=None):
+        """Download an Instagram video"""
+        url = self.insta_entry.value.strip()
         if not url:
-            messagebox.showerror("Error", "Please enter an Instagram video URL.")
+            self.update_status("Please enter an Instagram URL")
             return
         
-        # Start download in separate thread
+        self.update_status("Starting Instagram download...")
+        self.insta_download_btn.disabled = True
+        self.page.update()
+        
         thread = threading.Thread(target=self._download_instagram_thread, args=(url,))
         thread.daemon = True
         thread.start()
     
     def _download_instagram_thread(self, url):
-        """Thread function for Instagram download"""
+        """Threaded function for downloading from Instagram"""
         try:
-            self.root.after(0, lambda: self.insta_download_btn.config(state="disabled"))
-            self.root.after(0, lambda: self.update_status("Downloading Instagram video..."))
-            
-            # Ensure download directory exists
-            download_dir = self.download_path.get()
-            if self.auto_create_folders.get():
-                os.makedirs(download_dir, exist_ok=True)
+            download_dir = self.download_path.value
+            os.makedirs(download_dir, exist_ok=True)
             
             ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
                 'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
-                'quiet': True
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                
-                # Add to history
-                title = info.get('title', url)
-                self.add_to_history(url, title, 'Instagram')
-                
-                self.root.after(0, lambda: self.update_status("Instagram download completed!"))
-                
-                if self.show_notifications.get():
-                    self.root.after(0, lambda: messagebox.showinfo("Success", "Instagram video downloaded successfully!"))
+                title = info.get('title', 'Unknown Instagram Video')
+                self.page.run_thread(self.update_status, "Instagram download completed!")
+                self.page.run_thread(self.add_to_history, url, title, 'Instagram')
                 
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to download Instagram video: {str(e)}"))
-            self.root.after(0, lambda: self.update_status("Instagram download failed"))
+            self.page.run_thread(self.update_status, f"Instagram download failed: {e}")
         finally:
-            self.root.after(0, lambda: self.insta_download_btn.config(state="normal"))
+            self.page.run_thread(lambda: setattr(self.insta_download_btn, 'disabled', False))
+            self.page.run_thread(self.page.update)
     
     def add_to_history(self, url, title, platform):
-        """Add download to history"""
+        """Add a downloaded item to the history list and save it"""
         history_entry = {
             'url': url,
             'title': title,
             'platform': platform,
             'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        
-        self.history.append(history_entry)
+        self.history.insert(0, history_entry) # Add to the beginning
         self.save_history()
         self.refresh_history_list()
     
     def load_history(self):
-        """Load download history from file"""
+        """Load download history from a JSON file"""
         if os.path.exists(self.history_file):
             try:
                 with open(self.history_file, 'r', encoding='utf-8') as f:
                     self.history = json.load(f)
-            except Exception:
+            except (json.JSONDecodeError, IOError):
                 self.history = []
         else:
             self.history = []
     
     def save_history(self):
-        """Save download history to file"""
+        """Save the current download history to a JSON file"""
         try:
             with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
-        except Exception as e:
+                json.dump(self.history, f, ensure_ascii=False, indent=4)
+        except IOError as e:
             print(f"Failed to save history: {e}")
     
-    def refresh_history_list(self):
-        """Refresh the history list display"""
-        self.history_tree.delete(*self.history_tree.get_children())
-        
-        for entry in reversed(self.history):  # Show newest first
+    def refresh_history_list(self, e=None):
+        """Refresh the history table UI"""
+        self.history_table.rows.clear()
+        for entry in self.history:
             title = entry.get('title', 'Unknown')
             url = entry.get('url', '')
-            date = entry.get('date', '')
-            platform = entry.get('platform', 'Unknown')
             
-            # Truncate long titles
-            if len(title) > 50:
-                title = title[:47] + "..."
-            
-            self.history_tree.insert('', 'end', values=(title, url, date, platform))
+            self.history_table.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(title[:50] + "..." if len(title) > 50 else title)),
+                        ft.DataCell(ft.Text(url[:40] + "..." if len(url) > 40 else url)),
+                        ft.DataCell(ft.Text(entry.get('date', ''))),
+                        ft.DataCell(ft.Text(entry.get('platform', 'N/A'))),
+                    ]
+                )
+            )
+        self.page.update()
     
-    def on_history_double_click(self, event):
-        """Handle double-click on history item"""
-        selection = self.history_tree.selection()
-        if not selection:
+    def clear_history(self, e=None):
+        """Clear all entries from the download history"""
+        if not self.history:
+            self.update_status("History is already empty.")
             return
-        
-        item = selection[0]
-        values = self.history_tree.item(item, 'values')
-        url = values[1]  # URL is in second column
-        
-        # Switch to appropriate tab and set URL
-        platform = values[3]  # Platform is in fourth column
-        
-        if platform.lower() == 'youtube':
-            self.notebook.select(0)  # YouTube tab
-            self.url_entry.delete(0, tk.END)
-            self.url_entry.insert(0, url)
-        elif platform.lower() == 'instagram':
-            self.notebook.select(1)  # Instagram tab
-            self.insta_entry.delete(0, tk.END)
-            self.insta_entry.insert(0, url)
-    
-    def clear_history(self):
-        """Clear download history"""
-        if messagebox.askyesno("Confirm", "Are you sure you want to clear all download history?"):
-            self.history = []
-            self.save_history()
-            self.refresh_history_list()
-            self.update_status("History cleared")
-    
-    def run(self):
-        """Start the application"""
-        self.root.mainloop()
+            
+        self.history.clear()
+        self.save_history()
+        self.refresh_history_list()
+        self.update_status("History cleared.")
 
-def main():
-    app = ModernVideoDownloader()
-    app.run()
+def main(page: ft.Page):
+    FletVideoDownloader(page)
 
 if __name__ == "__main__":
-    main()
+    ft.app(target=main)
